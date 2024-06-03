@@ -48,8 +48,8 @@
 /* Constants that aren't configurable in menuconfig */
 #define WEB_SERVER "wttr.in"
 #define WEB_PORT "443"
-#define WEB_URL "https://wttr.in/Santa_Cruz?format=%t&m"
-#define WEB_PATH "/Santa_Cruz?format=%t&m"
+#define WEB_URL "https://wttr.in?format=%t&m"
+#define WEB_PATH "/?format=%t&m"
 
 #define SERVER_URL_MAX_SZ 256
 
