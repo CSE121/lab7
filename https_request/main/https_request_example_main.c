@@ -45,7 +45,6 @@
 #endif
 #include "time_sync.h"
 
-/* Constants that aren't configurable in menuconfig */
 #define WEB_SERVER "wttr.in"
 #define WEB_PORT "443"
 #define WEB_URL "https://wttr.in?format=%t&m"
@@ -55,7 +54,6 @@
 
 static const char *TAG = "example";
 
-/* Timer interval once every day (24 Hours) */
 #define TIME_PERIOD (86400000000ULL)
 
 static const char HOWSMYSSL_REQUEST[] = "GET " WEB_PATH " HTTP/1.1\r\n"
@@ -63,24 +61,6 @@ static const char HOWSMYSSL_REQUEST[] = "GET " WEB_PATH " HTTP/1.1\r\n"
                                         "User-Agent: esp-idf/1.0 esp32\r\n"
                                         "\r\n";
 
-#ifdef CONFIG_EXAMPLE_CLIENT_SESSION_TICKETS
-static const char LOCAL_SRV_REQUEST[] =
-    "GET " CONFIG_EXAMPLE_LOCAL_SERVER_URL " HTTP/1.1\r\n"
-    "Host: " WEB_SERVER "\r\n"
-    "User-Agent: esp-idf/1.0 esp32\r\n"
-    "\r\n";
-#endif
-
-/* Root cert for howsmyssl.com, taken from server_root_cert.pem
-
-   The PEM file was extracted from the output of this command:
-   openssl s_client -showcerts -connect www.howsmyssl.com:443 </dev/null
-
-   The CA root cert is the last cert given in the chain of certs.
-
-   To embed it in the app binary, the PEM file is named
-   in the component.mk COMPONENT_EMBED_TXTFILES variable.
-*/
 extern const uint8_t
     server_root_cert_pem_start[] asm("_binary_server_root_cert_pem_start");
 extern const uint8_t
@@ -90,17 +70,6 @@ extern const uint8_t
     local_server_cert_pem_start[] asm("_binary_local_server_cert_pem_start");
 extern const uint8_t
     local_server_cert_pem_end[] asm("_binary_local_server_cert_pem_end");
-#if CONFIG_EXAMPLE_USING_ESP_TLS_MBEDTLS
-static const int server_supported_ciphersuites[] = {
-    MBEDTLS_TLS_RSA_WITH_AES_256_GCM_SHA384,
-    MBEDTLS_TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256, 0};
-static const int server_unsupported_ciphersuites[] = {
-    MBEDTLS_TLS_ECDHE_RSA_WITH_ARIA_128_CBC_SHA256, 0};
-#endif
-#ifdef CONFIG_EXAMPLE_CLIENT_SESSION_TICKETS
-static esp_tls_client_session_t *tls_client_session = NULL;
-static bool save_client_session = false;
-#endif
 
 #define PHONE_SERVER "10.0.0.179"
 #define PHONE_PORT "8000"
@@ -130,10 +99,6 @@ static void http_get_task(void) {
     return;
   }
 
-  /* Code to print the resolved IP.
-
-     Note: inet_ntoa is non-reentrant, look at ipaddr_ntoa_r for "real" code
-   */
   addr = &((struct sockaddr_in *)res->ai_addr)->sin_addr;
   ESP_LOGI(TAG, "DNS lookup succeeded. IP=%s", inet_ntoa(*addr));
 
@@ -177,7 +142,6 @@ static void http_get_task(void) {
   }
   ESP_LOGI(TAG, "... set socket receiving timeout success");
 
-  /* Read HTTP response */
   do {
     bzero(recv_buf, sizeof(recv_buf));
     r = read(s, recv_buf, sizeof(recv_buf) - 1);
@@ -190,10 +154,12 @@ static void http_get_task(void) {
            r, errno);
   close(s);
 }
+
 static void https_get_request(esp_tls_cfg_t cfg, const char *WEB_SERVER_URL,
                               const char *REQUEST) {
   char buf[512];
   int ret, len;
+  bool body_started = false;
 
   esp_tls_t *tls = esp_tls_init();
   if (!tls) {
@@ -208,7 +174,6 @@ static void https_get_request(esp_tls_cfg_t cfg, const char *WEB_SERVER_URL,
     int esp_tls_code = 0, esp_tls_flags = 0;
     esp_tls_error_handle_t tls_e = NULL;
     esp_tls_get_error_handle(tls, &tls_e);
-    /* Try to get TLS stack level error and certificate failure flags, if any */
     ret =
         esp_tls_get_and_clear_last_error(tls_e, &esp_tls_code, &esp_tls_flags);
     if (ret == ESP_OK) {
@@ -217,15 +182,6 @@ static void https_get_request(esp_tls_cfg_t cfg, const char *WEB_SERVER_URL,
     }
     goto cleanup;
   }
-
-#ifdef CONFIG_EXAMPLE_CLIENT_SESSION_TICKETS
-  /* The TLS session is successfully established, now saving the session ctx for
-   * reuse */
-  if (save_client_session) {
-    esp_tls_free_client_session(tls_client_session);
-    tls_client_session = esp_tls_get_client_session(tls);
-  }
-#endif
 
   size_t written_bytes = 0;
   do {
@@ -256,29 +212,33 @@ static void https_get_request(esp_tls_cfg_t cfg, const char *WEB_SERVER_URL,
       break;
     } else if (ret == 0) {
       ESP_LOGI(TAG, "connection closed");
-      http_get_task();
       break;
     }
 
     len = ret;
-    ESP_LOGD(TAG, "%d bytes read", len);
-    /* Print response directly to stdout as it is read */
-    for (int i = 0; i < len; i++) {
-      putchar(buf[i]);
+    buf[len] = '\0'; // Ensure null-terminated string
+
+    // Check if body has started
+    if (!body_started) {
+      char *body_start = strstr(buf, "\r\n\r\n");
+      if (body_start != NULL) {
+        body_start += 4; // Move past the header delimiter
+        body_started = true;
+        ESP_LOGI(TAG, "Received HTTP response body:");
+        ESP_LOGI(TAG, "%s", body_start);
+      }
+    } else {
+      ESP_LOGI(TAG, "%s", buf);
     }
-    putchar('\n'); // JSON output doesn't have a newline at end
   } while (1);
 
 cleanup:
   esp_tls_conn_destroy(tls);
 exit:
-  for (int countdown = 10; countdown >= 0; countdown--) {
-    ESP_LOGI(TAG, "%d...", countdown);
-    vTaskDelay(1000 / portTICK_PERIOD_MS);
-  }
+  ESP_LOGI(TAG, "Waiting 5 seconds");
+  vTaskDelay(5000 / portTICK_PERIOD_MS);
 }
 
-#if CONFIG_MBEDTLS_CERTIFICATE_BUNDLE && CONFIG_EXAMPLE_USING_ESP_TLS_MBEDTLS
 static void https_get_request_using_crt_bundle(void) {
   ESP_LOGI(TAG, "https_request using crt bundle");
   esp_tls_cfg_t cfg = {
@@ -286,117 +246,13 @@ static void https_get_request_using_crt_bundle(void) {
   };
   https_get_request(cfg, WEB_URL, HOWSMYSSL_REQUEST);
 }
-#endif // CONFIG_MBEDTLS_CERTIFICATE_BUNDLE &&
-       // CONFIG_EXAMPLE_USING_ESP_TLS_MBEDTLS
-
-static void https_get_request_using_cacert_buf(void) {
-  ESP_LOGI(TAG, "https_request using cacert_buf");
-  esp_tls_cfg_t cfg = {
-      .cacert_buf = (const unsigned char *)server_root_cert_pem_start,
-      .cacert_bytes = server_root_cert_pem_end - server_root_cert_pem_start,
-  };
-  https_get_request(cfg, WEB_URL, HOWSMYSSL_REQUEST);
-}
-
-static void https_get_request_using_specified_ciphersuites(void) {
-#if CONFIG_EXAMPLE_USING_ESP_TLS_MBEDTLS
-
-  ESP_LOGI(TAG, "https_request using server supported ciphersuites");
-  esp_tls_cfg_t cfg = {
-      .cacert_buf = (const unsigned char *)server_root_cert_pem_start,
-      .cacert_bytes = server_root_cert_pem_end - server_root_cert_pem_start,
-      .ciphersuites_list = server_supported_ciphersuites,
-  };
-
-  https_get_request(cfg, WEB_URL, HOWSMYSSL_REQUEST);
-
-  ESP_LOGI(TAG, "https_request using server unsupported ciphersuites");
-
-  cfg.ciphersuites_list = server_unsupported_ciphersuites;
-
-  https_get_request(cfg, WEB_URL, HOWSMYSSL_REQUEST);
-#endif
-}
-
-static void https_get_request_using_global_ca_store(void) {
-  esp_err_t esp_ret = ESP_FAIL;
-  ESP_LOGI(TAG, "https_request using global ca_store");
-  esp_ret = esp_tls_set_global_ca_store(server_root_cert_pem_start,
-                                        server_root_cert_pem_end -
-                                            server_root_cert_pem_start);
-  if (esp_ret != ESP_OK) {
-    ESP_LOGE(TAG,
-             "Error in setting the global ca store: [%02X] (%s),could not "
-             "complete the https_request using global_ca_store",
-             esp_ret, esp_err_to_name(esp_ret));
-    return;
-  }
-  esp_tls_cfg_t cfg = {
-      .use_global_ca_store = true,
-  };
-  https_get_request(cfg, WEB_URL, HOWSMYSSL_REQUEST);
-  esp_tls_free_global_ca_store();
-}
-
-#ifdef CONFIG_EXAMPLE_CLIENT_SESSION_TICKETS
-static void https_get_request_to_local_server(const char *url) {
-  ESP_LOGI(TAG, "https_request to local server");
-  esp_tls_cfg_t cfg = {
-      .cacert_buf = (const unsigned char *)local_server_cert_pem_start,
-      .cacert_bytes = local_server_cert_pem_end - local_server_cert_pem_start,
-      .skip_common_name = true,
-  };
-  save_client_session = true;
-  https_get_request(cfg, url, LOCAL_SRV_REQUEST);
-}
-
-static void https_get_request_using_already_saved_session(const char *url) {
-  ESP_LOGI(TAG, "https_request using saved client session");
-  esp_tls_cfg_t cfg = {
-      .client_session = tls_client_session,
-  };
-  https_get_request(cfg, url, LOCAL_SRV_REQUEST);
-  esp_tls_free_client_session(tls_client_session);
-  save_client_session = false;
-  tls_client_session = NULL;
-}
-#endif
 
 static void https_request_task(void *pvparameters) {
   ESP_LOGI(TAG, "Start https_request example");
 
-#ifdef CONFIG_EXAMPLE_CLIENT_SESSION_TICKETS
-  char *server_url = NULL;
-#ifdef CONFIG_EXAMPLE_LOCAL_SERVER_URL_FROM_STDIN
-  char url_buf[SERVER_URL_MAX_SZ];
-  if (strcmp(CONFIG_EXAMPLE_LOCAL_SERVER_URL, "FROM_STDIN") == 0) {
-    example_configure_stdin_stdout();
-    fgets(url_buf, SERVER_URL_MAX_SZ, stdin);
-    int len = strlen(url_buf);
-    url_buf[len - 1] = '\0';
-    server_url = url_buf;
-  } else {
-    ESP_LOGE(TAG, "Configuration mismatch: invalid url for local server");
-    abort();
+  while (1) {
+    https_get_request_using_crt_bundle();
   }
-  printf("\nServer URL obtained is %s\n", url_buf);
-#else
-  server_url = CONFIG_EXAMPLE_LOCAL_SERVER_URL;
-#endif /* CONFIG_EXAMPLE_LOCAL_SERVER_URL_FROM_STDIN */
-  https_get_request_to_local_server(server_url);
-  https_get_request_using_already_saved_session(server_url);
-#endif
-
-#if CONFIG_MBEDTLS_CERTIFICATE_BUNDLE && CONFIG_EXAMPLE_USING_ESP_TLS_MBEDTLS
-  https_get_request_using_crt_bundle();
-#endif
-  ESP_LOGI(TAG, "Minimum free heap size: %" PRIu32 " bytes",
-           esp_get_minimum_free_heap_size());
-  https_get_request_using_cacert_buf();
-  https_get_request_using_global_ca_store();
-  https_get_request_using_specified_ciphersuites();
-  ESP_LOGI(TAG, "Finish https_request example");
-  vTaskDelete(NULL);
 }
 
 void app_main(void) {
