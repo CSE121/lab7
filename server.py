@@ -1,6 +1,6 @@
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import urllib.request
-import json
+import urllib.parse
 
 # Global variables to store data
 location_data = {}
@@ -35,9 +35,10 @@ class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
 
     def handle_store_data(self, post_data):
         try:
-            data = json.loads(post_data.decode('utf-8'))
+            # Parse the URL-encoded form data
+            data = urllib.parse.parse_qs(post_data.decode('utf-8'))
             global location_data
-            location_data = data
+            location_data = {k: v[0] for k, v in data.items()}
             self.send_response(200)
             self.send_header('Content-type', 'text/plain')
             self.end_headers()

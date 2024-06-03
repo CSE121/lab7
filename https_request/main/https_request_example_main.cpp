@@ -56,6 +56,8 @@ static const char HOWSMYSSL_REQUEST[] = "GET " WEB_PATH " HTTP/1.1\r\n"
 
 static char https_response_body[512] = "";
 static char http_response_body[512] = "";
+static int roundedTemperature = 0;
+static int roundedHumidity = 0;
 
 extern const uint8_t
     server_root_cert_pem_start[] asm("_binary_server_root_cert_pem_start");
@@ -69,6 +71,120 @@ extern const uint8_t
 
 #define PHONE_SERVER "10.0.0.179"
 #define PHONE_PORT "1234"
+#define PHONE_POST_URL "http://10.0.0.179:1234/store_data"
+#define PHONE_POST_PATH "/store_data"
+
+static const char *POST_REQUEST_FORMAT =
+    "POST " PHONE_POST_PATH " HTTP/1.1\r\n"
+    "Host: " PHONE_SERVER ":" PHONE_PORT "\r\n"
+    "Content-Type: application/x-www-form-urlencoded\r\n"
+    "Content-Length: %d\r\n"
+    "User-Agent: esp-idf/1.0 esp32\r\n"
+    "\r\n"
+    "%s";
+
+static void http_post_task(void) {
+  const struct addrinfo hints = {
+      .ai_family = AF_INET,
+      .ai_socktype = SOCK_STREAM,
+  };
+  struct addrinfo *res;
+  struct in_addr *addr;
+  int s, r;
+  char recv_buf[512];
+  char post_data[256];
+
+  // Construct the post_data with the global variables
+  snprintf(post_data, sizeof(post_data),
+           "wttrTemp=%s&localTemp=%d&localHumidity=%d&location=%s",
+           https_response_body, roundedTemperature, roundedHumidity,
+           http_response_body);
+
+  int err = getaddrinfo(PHONE_SERVER, PHONE_PORT, &hints, &res);
+
+  if (err != 0 || res == NULL) {
+    ESP_LOGE(TAG, "DNS lookup failed err=%d res=%p", err, res);
+    vTaskDelay(1000 / portTICK_PERIOD_MS);
+    return;
+  }
+
+  addr = &((struct sockaddr_in *)res->ai_addr)->sin_addr;
+  ESP_LOGI(TAG, "DNS lookup succeeded. IP=%s", inet_ntoa(*addr));
+
+  s = socket(res->ai_family, res->ai_socktype, 0);
+  if (s < 0) {
+    ESP_LOGE(TAG, "... Failed to allocate socket.");
+    freeaddrinfo(res);
+    vTaskDelay(1000 / portTICK_PERIOD_MS);
+    return;
+  }
+  ESP_LOGI(TAG, "... allocated socket");
+
+  if (connect(s, res->ai_addr, res->ai_addrlen) != 0) {
+    ESP_LOGE(TAG, "... socket connect failed errno=%d", errno);
+    close(s);
+    freeaddrinfo(res);
+    vTaskDelay(4000 / portTICK_PERIOD_MS);
+    return;
+  }
+
+  ESP_LOGI(TAG, "... connected");
+  freeaddrinfo(res);
+
+  char request[1024];
+  snprintf(request, sizeof(request), POST_REQUEST_FORMAT, strlen(post_data),
+           post_data);
+
+  if (write(s, request, strlen(request)) < 0) {
+    ESP_LOGE(TAG, "... socket send failed");
+    close(s);
+    vTaskDelay(4000 / portTICK_PERIOD_MS);
+    return;
+  }
+  ESP_LOGI(TAG, "... socket send success");
+
+  struct timeval receiving_timeout;
+  receiving_timeout.tv_sec = 5;
+  receiving_timeout.tv_usec = 0;
+  if (setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &receiving_timeout,
+                 sizeof(receiving_timeout)) < 0) {
+    ESP_LOGE(TAG, "... failed to set socket receiving timeout");
+    close(s);
+    vTaskDelay(4000 / portTICK_PERIOD_MS);
+    return;
+  }
+  ESP_LOGI(TAG, "... set socket receiving timeout success");
+
+  ESP_LOGI(TAG, "Reading HTTP response...");
+  do {
+    bzero(recv_buf, sizeof(recv_buf));
+    r = read(s, recv_buf, sizeof(recv_buf) - 1);
+    if (r < 0) {
+      ESP_LOGE(TAG, "Error reading from socket errno=%d", errno);
+      break;
+    } else if (r == 0) {
+      ESP_LOGI(TAG, "Connection closed");
+      break;
+    }
+
+    recv_buf[r] = '\0'; // Ensure null-terminated string
+
+    // Check if body has started
+    char *body_start = strstr(recv_buf, "\r\n\r\n");
+    if (body_start != NULL) {
+      body_start += 4; // Move past the header delimiter
+      ESP_LOGI(TAG, "Received HTTP response body:");
+      ESP_LOGI(TAG, "%s", body_start);
+      strcpy(http_response_body, body_start);
+    } else {
+      ESP_LOGI(TAG, "%s", recv_buf);
+    }
+  } while (r > 0);
+
+  ESP_LOGI(TAG, "... done reading from socket. Last read return=%d errno=%d.",
+           r, errno);
+  close(s);
+}
 #define PHONE_URL "http://10.0.0.179:1234/location"
 #define PHONE_PATH "/location"
 
@@ -310,11 +426,12 @@ static void https_request_task(void *pvparameters) {
 
     if (read_temperature(&temperature) == ESP_OK &&
         read_humidity(&humidity) == ESP_OK) {
-      int roundedTemperature = static_cast<int>(std::round(temperature));
-      int roundedHumidity = static_cast<int>(std::round(humidity));
+      roundedTemperature = static_cast<int>(std::round(temperature));
+      roundedHumidity = static_cast<int>(std::round(humidity));
       ESP_LOGI(TAG, "%d Celcius (local)", roundedTemperature);
       ESP_LOGI(TAG, "%d humidity", roundedHumidity);
     }
+    http_post_task();
 
     ESP_LOGI(TAG, "waiting 5 seconds");
 
