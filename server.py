@@ -1,10 +1,24 @@
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import urllib.request
+import json
+
+# Global variables to store data
+location_data = {}
 
 class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == '/location':
             self.handle_location_request()
+        else:
+            self.send_response(404)
+            self.end_headers()
+            self.wfile.write(b"Not Found")
+
+    def do_POST(self):
+        if self.path == '/store_data':
+            content_length = int(self.headers['Content-Length'])
+            post_data = self.rfile.read(content_length)
+            self.handle_store_data(post_data)
         else:
             self.send_response(404)
             self.end_headers()
@@ -19,7 +33,22 @@ class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(location.encode('utf-8'))
 
-def run(server_class=HTTPServer, handler_class=SimpleHTTPRequestHandler, port=8000):
+    def handle_store_data(self, post_data):
+        try:
+            data = json.loads(post_data.decode('utf-8'))
+            global location_data
+            location_data = data
+            self.send_response(200)
+            self.send_header('Content-type', 'text/plain')
+            self.end_headers()
+            self.wfile.write(b"Data stored successfully")
+        except Exception as e:
+            self.send_response(400)
+            self.send_header('Content-type', 'text/plain')
+            self.end_headers()
+            self.wfile.write(f"Error: {str(e)}".encode('utf-8'))
+
+def run(server_class=HTTPServer, handler_class=SimpleHTTPRequestHandler, port=1234):
     server_address = ('', port)
     httpd = server_class(server_address, handler_class)
     print(f'Starting httpd server on port {port}...')
