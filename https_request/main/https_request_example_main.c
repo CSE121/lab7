@@ -1,18 +1,3 @@
-/*
- * HTTPS GET Example using plain Mbed TLS sockets
- *
- * Contacts the howsmyssl.com API via TLS v1.2 and reads a JSON
- * response.
- *
- * Adapted from the ssl_client1 example in Mbed TLS.
- *
- * SPDX-FileCopyrightText: The Mbed TLS Contributors
- *
- * SPDX-License-Identifier: Apache-2.0
- *
- * SPDX-FileContributor: 2015-2023 Espressif Systems (Shanghai) CO LTD
- */
-
 #include "esp_event.h"
 #include "esp_log.h"
 #include "esp_netif.h"
@@ -61,6 +46,9 @@ static const char HOWSMYSSL_REQUEST[] = "GET " WEB_PATH " HTTP/1.1\r\n"
                                         "User-Agent: esp-idf/1.0 esp32\r\n"
                                         "\r\n";
 
+static char https_response_body[512] = "";
+static char http_response_body[512] = "";
+
 extern const uint8_t
     server_root_cert_pem_start[] asm("_binary_server_root_cert_pem_start");
 extern const uint8_t
@@ -72,8 +60,8 @@ extern const uint8_t
     local_server_cert_pem_end[] asm("_binary_local_server_cert_pem_end");
 
 #define PHONE_SERVER "10.0.0.179"
-#define PHONE_PORT "8000"
-#define PHONE_URL "http://10.0.0.179:8000/location"
+#define PHONE_PORT "1234"
+#define PHONE_URL "http://10.0.0.179:1234/location"
 #define PHONE_PATH "/location"
 
 static const char *REQUEST = "GET " PHONE_PATH " HTTP/1.1\r\n"
@@ -162,6 +150,7 @@ static void http_get_task(void) {
       body_start += 4; // Move past the header delimiter
       ESP_LOGI(TAG, "Received HTTP response body:");
       ESP_LOGI(TAG, "%s", body_start);
+      strcpy(http_response_body, body_start);
     } else {
       ESP_LOGI(TAG, "%s", recv_buf);
     }
@@ -241,6 +230,7 @@ static void https_get_request(esp_tls_cfg_t cfg, const char *WEB_SERVER_URL,
         body_started = true;
         ESP_LOGI(TAG, "Received HTTP response body:");
         ESP_LOGI(TAG, "%s", body_start);
+        strcpy(https_response_body, body_start);
       }
     } else {
       ESP_LOGI(TAG, "%s", buf);
@@ -250,8 +240,7 @@ static void https_get_request(esp_tls_cfg_t cfg, const char *WEB_SERVER_URL,
 cleanup:
   esp_tls_conn_destroy(tls);
 exit:
-  ESP_LOGI(TAG, "Waiting 5 seconds");
-  vTaskDelay(5000 / portTICK_PERIOD_MS);
+  vTaskDelay(10 / portTICK_PERIOD_MS);
 }
 
 static void https_get_request_using_crt_bundle(void) {
