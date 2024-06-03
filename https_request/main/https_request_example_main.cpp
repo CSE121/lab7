@@ -1,3 +1,12 @@
+
+#include "TempSensor.h"
+#include <cmath>
+#include <string>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #include "esp_event.h"
 #include "esp_log.h"
 #include "esp_netif.h"
@@ -13,7 +22,6 @@
 #include "protocol_examples_common.h"
 #include <inttypes.h>
 #include <stdlib.h>
-#include <string.h>
 #include <sys/time.h>
 #include <time.h>
 
@@ -162,6 +170,7 @@ static void http_get_task(void) {
 }
 static void https_get_request(esp_tls_cfg_t cfg, const char *WEB_SERVER_URL,
                               const char *REQUEST) {
+  size_t written_bytes = 0;
   char buf[512];
   int ret, len;
   bool body_started = false;
@@ -188,7 +197,6 @@ static void https_get_request(esp_tls_cfg_t cfg, const char *WEB_SERVER_URL,
     goto cleanup;
   }
 
-  size_t written_bytes = 0;
   do {
     ret = esp_tls_conn_write(tls, REQUEST + written_bytes,
                              strlen(REQUEST) - written_bytes);
@@ -251,12 +259,66 @@ static void https_get_request_using_crt_bundle(void) {
   https_get_request(cfg, WEB_URL, HOWSMYSSL_REQUEST);
 }
 
+static esp_err_t i2c_master_init() {
+  i2c_port_t i2c_master_port = I2C_MASTER_NUM;
+  i2c_config_t conf = {
+      .mode = I2C_MODE_MASTER,
+      .sda_io_num = I2C_MASTER_SDA_IO,
+      .scl_io_num = I2C_MASTER_SCL_IO,
+      .sda_pullup_en = GPIO_PULLUP_DISABLE,
+      .scl_pullup_en = GPIO_PULLUP_DISABLE,
+      .master = {.clk_speed = I2C_MASTER_FREQ_HZ},
+  };
+  i2c_param_config(i2c_master_port, &conf);
+  return i2c_driver_install(i2c_master_port, conf.mode,
+                            I2C_MASTER_RX_BUF_DISABLE,
+                            I2C_MASTER_TX_BUF_DISABLE, 0);
+}
+
+#include "driver/i2c.h"
+#include "esp_err.h"
+#include "esp_log.h"
+#include "freertos/projdefs.h"
+#include "hal/i2c_types.h"
+#include <stdio.h>
+
+#define I2C_MASTER_SCL_IO 8
+#define I2C_MASTER_SDA_IO 10
+#define I2C_MASTER_NUM I2C_NUM_0
+#define I2C_MASTER_FREQ_HZ 100000
+#define I2C_MASTER_TX_BUF_DISABLE 0
+#define I2C_MASTER_RX_BUF_DISABLE 0
+#define SHTC3_SENSOR_ADDR 0x70
+#define WRITE_BIT I2C_MASTER_WRITE
+#define READ_BIT I2C_MASTER_READ
+#define ACK_CHECK_EN 0x1
+#define ACK_CHECK_DIS 0x0
+#define ACK_VAL 0x0
+#define NACK_VAL 0x1
+
 static void https_request_task(void *pvparameters) {
   ESP_LOGI(TAG, "Start https_request example");
 
+  ESP_ERROR_CHECK(i2c_master_init());
+  ESP_LOGI(TAG, "I2C initialized successfully");
+
+  float temperature = 0;
+  float humidity = 0;
   while (1) {
     http_get_task();
     https_get_request_using_crt_bundle();
+
+    if (read_temperature(&temperature) == ESP_OK &&
+        read_humidity(&humidity) == ESP_OK) {
+      int roundedTemperature = static_cast<int>(std::round(temperature));
+      int roundedHumidity = static_cast<int>(std::round(humidity));
+      ESP_LOGI(TAG, "%d Celcius (local)", roundedTemperature);
+      ESP_LOGI(TAG, "%d humidity", roundedHumidity);
+    }
+
+    ESP_LOGI(TAG, "waiting 5 seconds");
+
+    vTaskDelay(5000 / portTICK_PERIOD_MS);
   }
 }
 
@@ -277,7 +339,7 @@ void app_main(void) {
   }
 
   const esp_timer_create_args_t nvs_update_timer_args = {
-      .callback = (void *)&fetch_and_store_time_in_nvs,
+      .callback = (esp_timer_cb_t)&fetch_and_store_time_in_nvs,
   };
 
   esp_timer_handle_t nvs_update_timer;
@@ -285,4 +347,5 @@ void app_main(void) {
   ESP_ERROR_CHECK(esp_timer_start_periodic(nvs_update_timer, TIME_PERIOD));
 
   xTaskCreate(&https_request_task, "https_get_task", 8192, NULL, 5, NULL);
+}
 }
