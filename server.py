@@ -43,6 +43,11 @@ class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
             self.send_header('Content-type', 'text/plain')
             self.end_headers()
             self.wfile.write(b"Data stored successfully")
+            
+            # Print the stored data
+            print("Stored data:")
+            for key, value in location_data.items():
+                print(f"{key}: {value}")
         except Exception as e:
             self.send_response(400)
             self.send_header('Content-type', 'text/plain')
