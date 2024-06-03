@@ -89,7 +89,7 @@ static void http_get_task(void) {
   struct addrinfo *res;
   struct in_addr *addr;
   int s, r;
-  char recv_buf[64];
+  char recv_buf[512];
 
   int err = getaddrinfo(PHONE_SERVER, PHONE_PORT, &hints, &res);
 
@@ -142,11 +142,28 @@ static void http_get_task(void) {
   }
   ESP_LOGI(TAG, "... set socket receiving timeout success");
 
+  ESP_LOGI(TAG, "Reading HTTP response...");
   do {
     bzero(recv_buf, sizeof(recv_buf));
     r = read(s, recv_buf, sizeof(recv_buf) - 1);
-    for (int i = 0; i < r; i++) {
-      putchar(recv_buf[i]);
+    if (r < 0) {
+      ESP_LOGE(TAG, "Error reading from socket errno=%d", errno);
+      break;
+    } else if (r == 0) {
+      ESP_LOGI(TAG, "Connection closed");
+      break;
+    }
+
+    recv_buf[r] = '\0'; // Ensure null-terminated string
+
+    // Check if body has started
+    char *body_start = strstr(recv_buf, "\r\n\r\n");
+    if (body_start != NULL) {
+      body_start += 4; // Move past the header delimiter
+      ESP_LOGI(TAG, "Received HTTP response body:");
+      ESP_LOGI(TAG, "%s", body_start);
+    } else {
+      ESP_LOGI(TAG, "%s", recv_buf);
     }
   } while (r > 0);
 
@@ -154,7 +171,6 @@ static void http_get_task(void) {
            r, errno);
   close(s);
 }
-
 static void https_get_request(esp_tls_cfg_t cfg, const char *WEB_SERVER_URL,
                               const char *REQUEST) {
   char buf[512];
@@ -216,13 +232,12 @@ static void https_get_request(esp_tls_cfg_t cfg, const char *WEB_SERVER_URL,
     }
 
     len = ret;
-    buf[len] = '\0'; // Ensure null-terminated string
+    buf[len] = '\0';
 
-    // Check if body has started
     if (!body_started) {
       char *body_start = strstr(buf, "\r\n\r\n");
       if (body_start != NULL) {
-        body_start += 4; // Move past the header delimiter
+        body_start += 4;
         body_started = true;
         ESP_LOGI(TAG, "Received HTTP response body:");
         ESP_LOGI(TAG, "%s", body_start);
@@ -251,6 +266,7 @@ static void https_request_task(void *pvparameters) {
   ESP_LOGI(TAG, "Start https_request example");
 
   while (1) {
+    http_get_task();
     https_get_request_using_crt_bundle();
   }
 }
